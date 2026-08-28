@@ -10,6 +10,75 @@ export interface DuplicateMatch {
 const TITLE_SIMILARITY_THRESHOLD = 0.45;
 const MATCH_SCORE_THRESHOLD = 0.6;
 const DEADLINE_PROXIMITY_DAYS = 21;
+// Max number of non-boilerplate words allowed to differ between two titles
+// before they're presumed to name different scholarships outright — see the
+// significantWordDiff() doc comment for why this exists.
+const MAX_SIGNIFICANT_WORD_DIFF = 1;
+
+const TITLE_STOPWORDS = new Set([
+  "scholarship",
+  "scholarships",
+  "fellowship",
+  "fellowships",
+  "program",
+  "programme",
+  "programs",
+  "programmes",
+  "grant",
+  "grants",
+  "award",
+  "awards",
+  "funding",
+  "fully",
+  "partially",
+  "funded",
+  "international",
+  "students",
+  "student",
+  "application",
+  "apply",
+  "opportunity",
+  "opportunities",
+  "for",
+  "the",
+  "and",
+  "of",
+  "in",
+  "at",
+  "to",
+  "a",
+  "an",
+  "on",
+  "with",
+]);
+
+function significantWords(text: string): Set<string> {
+  return new Set(text.split(/\s+/).filter((w) => w.length > 1 && !TITLE_STOPWORDS.has(w) && !/^\d+$/.test(w)));
+}
+
+/**
+ * Char-trigram similarity (see titleSimilarity()) can't tell "the same
+ * scholarship, reworded" apart from "a sibling scholarship in the same
+ * program family, differing only in region/subject" — two titles that share
+ * one long template and differ in a single proper noun ("...Nigeria
+ * Leadership Journey..." vs "...Eastern Africa Leadership Journey...") score
+ * HIGHER on trigram similarity than genuinely-the-same titles phrased
+ * differently do, because most of the string is byte-identical. This gate
+ * catches that: it strips common scholarship boilerplate words and years,
+ * then requires the two titles' remaining (presumably distinguishing) words
+ * to match almost exactly before trigram/provider/deadline scoring even
+ * runs. A false negative here just means two sources of the truly same
+ * scholarship stay as separate records a little longer; a false positive
+ * would silently merge two different scholarships into one, which is worse.
+ */
+export function significantWordDiff(a: string, b: string): number {
+  const wordsA = significantWords(a);
+  const wordsB = significantWords(b);
+  let diff = 0;
+  for (const w of wordsA) if (!wordsB.has(w)) diff++;
+  for (const w of wordsB) if (!wordsA.has(w)) diff++;
+  return diff;
+}
 
 interface CandidateRow {
   id: string;
@@ -86,6 +155,8 @@ export async function findDuplicateScholarship(
 
   let best: DuplicateMatch | null = null;
   for (const row of rows) {
+    if (significantWordDiff(row.canonicalTitleNormalized, candidate.canonicalTitleNormalized) > MAX_SIGNIFICANT_WORD_DIFF) continue;
+
     const similarity = titleSimilarity(row.canonicalTitleNormalized, candidate.canonicalTitleNormalized);
     if (similarity <= TITLE_SIMILARITY_THRESHOLD) continue;
 

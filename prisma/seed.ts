@@ -44,6 +44,20 @@ const SOURCES = [
     reliability: SourceReliability.OFFICIAL_GOVERNMENT,
     notes: "Official Bangladesh government notice board. No robots.txt published; crawled conservatively.",
   },
+  {
+    name: "Scholars4Dev",
+    baseUrl: "https://www.scholars4dev.com",
+    crawlerType: "scholars4dev",
+    reliability: SourceReliability.AGGREGATOR,
+    notes: "WordPress scholarship aggregator with highly structured labeled fields. robots.txt allows crawling.",
+  },
+  {
+    name: "Opportunity Desk",
+    baseUrl: "https://opportunitydesk.org",
+    crawlerType: "opportunity-desk",
+    reliability: SourceReliability.AGGREGATOR,
+    notes: "WordPress opportunities blog (scholarships, fellowships, competitions). robots.txt has no restrictions.",
+  },
 ];
 
 interface SeedScholarship {

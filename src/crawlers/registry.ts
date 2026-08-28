@@ -3,6 +3,8 @@ import { opportunitiesCornersCrawler } from "./sources/opportunities-corners";
 import { scholarshipRoarCrawler } from "./sources/scholarship-roar";
 import { fullScholarshipsCrawler } from "./sources/full-scholarships";
 import { shedGovCrawler } from "./sources/shed-gov";
+import { scholars4devCrawler } from "./sources/scholars4dev";
+import { opportunityDeskCrawler } from "./sources/opportunity-desk";
 
 /**
  * Every crawler the platform knows about, keyed by ScholarshipSource.crawlerType.
@@ -15,6 +17,8 @@ export const CRAWLER_REGISTRY: Record<string, CrawlerDefinition> = {
   [scholarshipRoarCrawler.key]: scholarshipRoarCrawler,
   [fullScholarshipsCrawler.key]: fullScholarshipsCrawler,
   [shedGovCrawler.key]: shedGovCrawler,
+  [scholars4devCrawler.key]: scholars4devCrawler,
+  [opportunityDeskCrawler.key]: opportunityDeskCrawler,
 };
 
 export function getCrawler(crawlerType: string): CrawlerDefinition {

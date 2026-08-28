@@ -180,6 +180,16 @@ inspected directly:
 | scholarshiproar.com | Disallows `/wp-admin/`, `/search/`, comment/moderation paths | WordPress core XML sitemap |
 | fullscholarships.net | Disallows only `/search` | Blogger's paginated `sitemap.xml` |
 | shed.gov.bd | No `robots.txt` published (404) — treated as no restrictions declared, crawled at reduced rate as a courtesy | No sitemap; the general `/pages/notices` board, filtered by scholarship keywords |
+| scholars4dev.com | Disallows `/wp-admin/`, `/cgi-bin/`, a handful of nationality-tag archives | All in One SEO XML sitemap |
+| opportunitydesk.org | No `Disallow` directives at all — only the content-signal policy legend, with no restriction values set | WordPress core XML sitemap |
+
+Also evaluated and rejected before writing an adapter: `studyin.lt`, `studyinlatvia.lv`, and
+`educationinireland.com` all had permissive robots.txt but, on inspecting actual content,
+turned out to be general promotional sites with little-to-no crawlable scholarship-listing
+content (see git history for the full evaluation). `studyingreece.edu.gr` explicitly
+disallows `ClaudeBot` and sets `ai-train=no` via its Cloudflare content-signal policy — not
+crawled, full stop. `scholarshipportal.com` redirects to a Cloudflare-protected page that
+403s on a plain request — not crawled; bypassing bot protection is out of scope.
 
 All four are crawled via sitemap/notice-board listing rather than scraping paginated
 category pages, with a per-request delay, retry-with-backoff (no retry on 4xx), a request

@@ -79,9 +79,14 @@ export async function* crawlWordPressSource(config: WordPressSourceConfig): Asyn
     const deadlineRaw =
       extractLabeledValue(descriptionText, ["Application Deadline", "Deadline", "Last Date to Apply", "Closing Date"]) ??
       undefined;
-    const hostCountryRaw = extractLabeledValue(descriptionText, ["Host Country", "Country", "Study In"]) ?? undefined;
-    const degreeRaw = extractLabeledValue(descriptionText, ["Degree Level", "Level of Study", "Program Level"]) ?? undefined;
-    const fundingRaw = extractLabeledValue(descriptionText, ["Financial Benefits", "Funding Type", "Scholarship Type"]) ?? undefined;
+    const hostCountryRaw = extractLabeledValue(descriptionText, ["Host Country", "Country", "Study In", "Study in"]) ?? undefined;
+    const degreeRaw =
+      extractLabeledValue(descriptionText, ["Degree Level", "Level of Study", "Program Level", "Level/Field(s) of Study", "Level/Field of Study"]) ??
+      undefined;
+    const fundingRaw = extractLabeledValue(descriptionText, ["Financial Benefits", "Funding Type", "Scholarship Type", "Scholarship value/inclusions/duration"]) ?? undefined;
+    const providerRaw =
+      extractLabeledValue(descriptionText, ["Host Institution(s)", "Host Institution", "Provider", "Organization", "Organized by", "Offered by", "Sponsor"]) ??
+      undefined;
 
     // Article tag/category classes often encode degree level directly
     // (e.g. tag-masters-scholarships, tag-phd-scholarships) — fold those in
@@ -95,6 +100,7 @@ export async function* crawlWordPressSource(config: WordPressSourceConfig): Asyn
     yield {
       sourceUrl: loc,
       title,
+      provider: providerRaw,
       descriptionText,
       descriptionHtml,
       degreeLevelsRaw: [degreeRaw, classHints].filter(Boolean) as string[],
