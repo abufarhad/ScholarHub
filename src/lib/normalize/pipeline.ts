@@ -39,7 +39,12 @@ export function normalizeScholarship(raw: RawScholarship): NormalizedScholarship
     provider: raw.provider?.trim() || raw.organization?.trim() || null,
     university: raw.university?.trim() || null,
     organization: raw.organization?.trim() || null,
-    description: raw.descriptionHtml || raw.descriptionText,
+    // The detail page renders `description` as plain text, not HTML — using
+    // descriptionHtml here would leak raw markup (tracking links, inline
+    // styles, blogger image embeds) straight onto the page as visible text.
+    // descriptionHtml is captured for a possible future rich-render feature
+    // but must never be the source for this field.
+    description: raw.descriptionText,
     summary: summary.length > 0 ? summary : null,
 
     degreeLevels,
