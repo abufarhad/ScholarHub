@@ -1,0 +1,374 @@
+// Prisma schema for ScholarHub — scholarship discovery & aggregation platform.
+//
+// DEPLOYMENT MODEL: static site on GitHub Pages. There is no live server and
+// no managed database — this SQLite file (prisma/data/scholarhub.db) is
+// committed to the repo and only ever touched by a GitHub Action, which:
+//   1. runs the crawler against it (this is the persistent "did we already
+//      see this scholarship" state, replacing a hosted Postgres instance),
+//   2. exports its contents to public/data/*.json (see scripts/export-static-data.ts),
+//   3. commits the updated .db file back to the repo,
+//   4. runs `next build` with output:"export" against those JSON files,
+//   5. deploys the resulting static HTML/JS to GitHub Pages.
+// The Next.js app itself never opens a database connection at request time.
+//
+// Design decisions carried over from the original design, still valid here:
+// - DegreeLevel and FundingType are closed vocabularies, modeled as enums.
+// - Subject and Country are open-ended reference data: real tables + joins.
+// - No user accounts / auth / saved-scholarships / alerts tables: those all
+//   require a live backend to be meaningful (session storage, outbound
+//   email), which a static site fundamentally cannot provide. Saved
+//   scholarships are reimplemented client-side only (browser localStorage —
+//   see src/lib/bookmarks.ts), which needs no schema at all.
+//
+// SQLite-specific accommodations vs. the Postgres version:
+// - No native scalar arrays or Postgres enums-as-arrays: `degreeLevels`,
+//   `otherBenefits`, and `tags` are stored as `Json` (a JSON-encoded array)
+//   instead of `DegreeLevel[]`/`String[]`. See src/lib/json-array.ts for the
+//   read/write helpers used everywhere these fields are touched.
+// - No pg_trgm / generated tsvector column: duplicate-title similarity is
+//   computed in application code (src/lib/dedup.ts) instead of in SQL, and
+//   full text search runs entirely client-side over the exported JSON
+//   (src/lib/client-search.ts) rather than via a database index.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Enums
+// ─────────────────────────────────────────────────────────────────────────
+
+enum DegreeLevel {
+  HIGH_SCHOOL
+  UNDERGRADUATE
+  MASTERS
+  PHD
+  POSTDOCTORAL
+  RESEARCH
+  FELLOWSHIP
+  OTHER
+}
+
+enum FundingType {
+  FULLY_FUNDED
+  PARTIALLY_FUNDED
+  TUITION_WAIVER
+  TUITION_ONLY
+  STIPEND
+  FELLOWSHIP
+  GRANT
+  OTHER
+}
+
+enum DeadlineType {
+  FIXED
+  ROLLING
+  ANNUAL
+  UNKNOWN
+}
+
+enum DeadlineStatus {
+  OPEN
+  CLOSING_SOON
+  CLOSED
+  UPCOMING
+  ROLLING
+  UNKNOWN
+}
+
+enum ScholarshipStatus {
+  DRAFT
+  PUBLISHED
+  EXPIRED
+  ARCHIVED
+  REJECTED
+}
+
+enum SourceReliability {
+  OFFICIAL_PROVIDER
+  OFFICIAL_GOVERNMENT
+  UNIVERSITY
+  VERIFIED_AGGREGATOR
+  AGGREGATOR
+  UNKNOWN
+}
+
+enum RequirementLevel {
+  REQUIRED
+  NOT_REQUIRED
+  OPTIONAL
+  UNKNOWN
+}
+
+enum CrawlStatus {
+  IDLE
+  QUEUED
+  RUNNING
+  SUCCESS
+  PARTIAL
+  FAILED
+}
+
+enum CrawlItemAction {
+  CREATED
+  UPDATED
+  UNCHANGED
+  SKIPPED
+  DUPLICATE
+  ERROR
+}
+
+enum SourceLinkStatus {
+  ACTIVE
+  REMOVED
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Reference data
+// ─────────────────────────────────────────────────────────────────────────
+
+model Country {
+  id     String  @id @default(cuid())
+  code   String  @unique
+  name   String  @unique
+  slug   String  @unique
+  region String?
+
+  destinations           ScholarshipDestination[]
+  eligibleFor            ScholarshipEligibleCountry[]
+  primaryForScholarships Scholarship[]                @relation("PrimaryDestination")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([region])
+}
+
+model Subject {
+  id       String  @id @default(cuid())
+  name     String  @unique
+  slug     String  @unique
+  category String?
+
+  scholarships ScholarshipSubject[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Sources & crawling
+// ─────────────────────────────────────────────────────────────────────────
+
+model ScholarshipSource {
+  id                String            @id @default(cuid())
+  name              String            @unique
+  baseUrl           String
+  enabled           Boolean           @default(true)
+  crawlerType       String
+  reliability       SourceReliability @default(AGGREGATOR)
+  crawlFrequencyHrs Int               @default(12)
+  respectRobotsTxt  Boolean           @default(true)
+  robotsTxtAllowed  Boolean           @default(true)
+  requestDelayMs    Int               @default(1500)
+
+  lastCrawledAt   DateTime?
+  nextCrawlAt     DateTime?
+  crawlStatus     CrawlStatus @default(IDLE)
+  crawlError      String?
+  totalItemsFound Int         @default(0)
+
+  notes String?
+
+  crawlRuns   CrawlRun[]
+  sourceLinks ScholarshipSourceLink[]
+  primaryFor  Scholarship[]           @relation("PrimarySource")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model CrawlRun {
+  id       String            @id @default(cuid())
+  sourceId String
+  source   ScholarshipSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+
+  startedAt   DateTime    @default(now())
+  completedAt DateTime?
+  status      CrawlStatus @default(RUNNING)
+
+  itemsFound      Int @default(0)
+  itemsCreated    Int @default(0)
+  itemsUpdated    Int @default(0)
+  itemsUnchanged  Int @default(0)
+  itemsSkipped    Int @default(0)
+  itemsExpired    Int @default(0)
+  duplicatesFound Int @default(0)
+  errorsCount     Int @default(0)
+
+  errorMessage String?
+  triggeredBy  String  @default("scheduler")
+
+  items CrawlItem[]
+
+  @@index([sourceId, startedAt])
+}
+
+model CrawlItem {
+  id            String          @id @default(cuid())
+  crawlRunId    String
+  crawlRun      CrawlRun        @relation(fields: [crawlRunId], references: [id], onDelete: Cascade)
+  sourceUrl     String
+  rawTitle      String?
+  action        CrawlItemAction
+  scholarshipId String?
+  scholarship   Scholarship?    @relation(fields: [scholarshipId], references: [id])
+  contentHash   String?
+  errorMessage  String?
+  createdAt     DateTime        @default(now())
+
+  @@index([crawlRunId])
+}
+
+model ScholarshipSourceLink {
+  id            String            @id @default(cuid())
+  scholarshipId String
+  scholarship   Scholarship       @relation(fields: [scholarshipId], references: [id], onDelete: Cascade)
+  sourceId      String
+  source        ScholarshipSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+
+  sourceUrl  String
+  externalId String?
+  isOfficial Boolean          @default(false)
+  status     SourceLinkStatus @default(ACTIVE)
+
+  rawTitle        String?
+  rawDeadlineText String?
+  contentHash     String?
+
+  firstSeenAt   DateTime @default(now())
+  lastSeenAt    DateTime @default(now())
+  lastCheckedAt DateTime @default(now())
+
+  @@unique([sourceId, sourceUrl])
+  @@index([scholarshipId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Scholarship (canonical record)
+// ─────────────────────────────────────────────────────────────────────────
+
+model Scholarship {
+  id   String @id @default(cuid())
+  slug String @unique
+
+  title                    String
+  canonicalTitleNormalized String
+  provider                 String?
+  university               String?
+  organization             String?
+  description              String
+  summary                  String?
+
+  // JSON-encoded string[] / DegreeLevel[] — SQLite has no native array type.
+  // Always read/write these via src/lib/json-array.ts, never raw JSON.parse.
+  degreeLevels Json @default("[]") // DegreeLevel[]
+  fundingType  FundingType
+
+  tuitionCoverage        String?
+  monthlyStipend         String?
+  accommodationCovered   Boolean?
+  airfareCovered         Boolean?
+  healthInsuranceCovered Boolean?
+  applicationFeeCovered  Boolean?
+  otherBenefits          Json @default("[]") // string[]
+
+  minimumEducation         String?
+  minimumGPA               Float?
+  ageLimit                 String?
+  nationalityRequirements  String?
+  languageRequirements     String?
+  ieltsRequired            RequirementLevel @default(UNKNOWN)
+  toeflRequired            RequirementLevel @default(UNKNOWN)
+  workExperienceRequired   Boolean?
+  otherEligibility         String?
+  allNationalitiesEligible Boolean          @default(true)
+
+  applicationDeadline DateTime?
+  deadlineType        DeadlineType   @default(UNKNOWN)
+  isRolling           Boolean        @default(false)
+  openingDate         DateTime?
+  deadlineStatus      DeadlineStatus @default(UNKNOWN)
+
+  primaryCountryId String?
+  primaryCountry   Country? @relation("PrimaryDestination", fields: [primaryCountryId], references: [id])
+  destinationCity  String?
+  region           String?
+
+  publishedAt       DateTime?
+  lastUpdatedAt     DateTime           @default(now())
+  lastVerifiedAt    DateTime?
+  scrapedAt         DateTime?
+  status            ScholarshipStatus  @default(PUBLISHED)
+  contentHash       String
+  sourceReliability SourceReliability  @default(AGGREGATOR)
+  officialUrl       String?
+  applicationUrl    String
+  primarySourceId   String?
+  primarySource     ScholarshipSource? @relation("PrimarySource", fields: [primarySourceId], references: [id])
+  isSeed            Boolean            @default(false)
+  viewCount         Int                @default(0)
+  tags              Json               @default("[]") // string[]
+
+  subjects          ScholarshipSubject[]
+  eligibleCountries ScholarshipEligibleCountry[]
+  destinations      ScholarshipDestination[]
+  sourceLinks       ScholarshipSourceLink[]
+  crawlItems        CrawlItem[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status, applicationDeadline])
+  @@index([deadlineStatus])
+  @@index([canonicalTitleNormalized])
+  @@index([contentHash])
+  @@index([slug])
+  @@index([primaryCountryId])
+}
+
+model ScholarshipSubject {
+  scholarshipId String
+  scholarship   Scholarship @relation(fields: [scholarshipId], references: [id], onDelete: Cascade)
+  subjectId     String
+  subject       Subject     @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+
+  @@id([scholarshipId, subjectId])
+  @@index([subjectId])
+}
+
+model ScholarshipEligibleCountry {
+  scholarshipId String
+  scholarship   Scholarship @relation(fields: [scholarshipId], references: [id], onDelete: Cascade)
+  countryId     String
+  country       Country     @relation(fields: [countryId], references: [id], onDelete: Cascade)
+
+  @@id([scholarshipId, countryId])
+  @@index([countryId])
+}
+
+model ScholarshipDestination {
+  scholarshipId String
+  scholarship   Scholarship @relation(fields: [scholarshipId], references: [id], onDelete: Cascade)
+  countryId     String
+  country       Country     @relation(fields: [countryId], references: [id], onDelete: Cascade)
+  isPrimary     Boolean     @default(false)
+
+  @@id([scholarshipId, countryId])
+  @@index([countryId])
+}

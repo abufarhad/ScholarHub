@@ -1,0 +1,106 @@
+name: Crawl & Deploy
+
+# This is ScholarHub's entire "backend": no server, no managed database.
+# On a schedule (and on demand), this workflow crawls the configured sources
+# into the SQLite file committed at prisma/data/scholarhub.db, exports it to
+# static JSON, builds the Next.js static export, and deploys it to GitHub
+# Pages. A plain push to main (e.g. a UI change) rebuilds and redeploys
+# using whatever data is already committed, without re-crawling.
+
+on:
+  schedule:
+    - cron: "0 0,12 * * *" # every 12 hours — matches the spec's crawl cadence
+  workflow_dispatch: {} # manual "Run workflow" button
+  push:
+    branches: [main]
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+env:
+  DATABASE_URL: "file:./data/scholarhub.db"
+
+jobs:
+  crawl-and-build:
+    runs-on: ubuntu-latest
+    # Skip the push triggered by this workflow's own "commit updated
+    # database" step below — otherwise every crawl run causes an immediate,
+    # redundant second build+deploy of the exact same output.
+    if: ${{ !(github.event_name == 'push' && github.actor == 'github-actions[bot]') }}
+    permissions:
+      contents: write # to commit the updated SQLite file back to the repo
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Apply database migrations
+        run: npx prisma migrate deploy
+
+      - name: Run crawler
+        if: github.event_name != 'push'
+        run: npm run crawler
+
+      - name: Commit updated database
+        if: github.event_name != 'push'
+        run: |
+          git config user.name "scholarhub-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add prisma/data/scholarhub.db
+          git diff --staged --quiet || git commit -m "chore: crawl update $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          git push
+
+      # GitHub Pages *project* sites (most repos) are served at
+      # /<repo>/ — *user/org* sites (a repo literally named
+      # <owner>.github.io) are served at the domain root. Compute both the
+      # base path and the full site URL once, for the build step below.
+      - name: Compute base path and site URL
+        id: pages-config
+        run: |
+          REPO_NAME="${GITHUB_REPOSITORY#*/}"
+          OWNER="${GITHUB_REPOSITORY%%/*}"
+          if [ "${REPO_NAME}" = "${OWNER}.github.io" ]; then
+            echo "base_path=" >> "$GITHUB_OUTPUT"
+            echo "site_url=https://${REPO_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "base_path=/${REPO_NAME}" >> "$GITHUB_OUTPUT"
+            echo "site_url=https://${OWNER}.github.io/${REPO_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build static site
+        env:
+          NEXT_PUBLIC_BASE_PATH: ${{ steps.pages-config.outputs.base_path }}
+          NEXT_PUBLIC_SITE_URL: ${{ steps.pages-config.outputs.site_url }}
+        run: npm run build
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./out
+
+  deploy:
+    needs: crawl-and-build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
